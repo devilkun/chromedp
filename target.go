@@ -28,7 +28,7 @@ type Target struct {
 
 	messageQueue chan *cdproto.Message
 
-	// frameMu protects both frames and cur.
+	// frameMu protects frames, execContexts, and cur.
 	frameMu sync.RWMutex
 	// frames is the set of encountered frames.
 	frames       map[cdp.FrameID]*cdp.Frame
@@ -334,7 +334,8 @@ func (t *Target) pageEvent(ev interface{}) {
 		*page.EventScreencastFrame,
 		*page.EventScreencastVisibilityChanged,
 		*page.EventWindowOpen,
-		*page.EventBackForwardCacheNotUsed:
+		*page.EventBackForwardCacheNotUsed,
+		*page.EventFrameSubtreeWillBeDetached:
 		return
 
 	default:
@@ -360,7 +361,10 @@ func (t *Target) pageEvent(ev interface{}) {
 
 // domEvent handles incoming DOM events.
 func (t *Target) domEvent(ctx context.Context, ev interface{}) {
+	t.frameMu.RLock()
 	f := t.frames[t.cur]
+	t.frameMu.RUnlock()
+
 	var id cdp.NodeID
 	var op nodeOp
 
@@ -379,11 +383,11 @@ func (t *Target) domEvent(ctx context.Context, ev interface{}) {
 		id, op = e.NodeID, attributeRemoved(e.Name)
 
 	case *dom.EventInlineStyleInvalidated:
-		if len(e.NodeIds) == 0 {
+		if len(e.NodeIDs) == 0 {
 			return
 		}
 
-		id, op = e.NodeIds[0], inlineStyleInvalidated(e.NodeIds[1:])
+		id, op = e.NodeIDs[0], inlineStyleInvalidated(e.NodeIDs[1:])
 
 	case *dom.EventCharacterDataModified:
 		id, op = e.NodeID, characterDataModified(e.CharacterData)
@@ -411,6 +415,9 @@ func (t *Target) domEvent(ctx context.Context, ev interface{}) {
 
 	case *dom.EventDistributedNodesUpdated:
 		id, op = e.InsertionPointID, distributedNodesUpdated(e.DistributedNodes)
+
+	case *dom.EventScrollableFlagUpdated:
+		id, op = e.NodeID, scrollableFlagUpdated(f.Nodes, e.NodeID)
 
 	default:
 		t.errf("unhandled node event %T", ev)
